@@ -16,6 +16,7 @@ model:
   confidence_threshold: 0.25
   image_size: 960
   tracker: bytetrack.yaml
+  device: auto
 risk:
   high_distance_px: 140
   danger_distance_px: 90

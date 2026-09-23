@@ -1,0 +1,28 @@
+[project]
+name = "vision-based-crosswalk-risk-warning"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "twelvehao12", email = "792146147@qq.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "audioop-lts>=0.2.2",
+    "gtts>=2.5.4",
+    "lap>=0.5.13",
+    "matplotlib>=3.11.2",
+    "numpy>=2.5.3",
+    "opencv-python-headless>=5.0.0.93",
+    "pandas>=3.0.6",
+    "pydub>=0.25.1",
+    "pyyaml>=6.0.3",
+    "ultralytics>=8.4.156",
+]
+
+[project.scripts]
+vision-based-crosswalk-risk-warning = "vision_based_crosswalk_risk_warning:main"
+
+[build-system]
+requires = ["uv_build>=0.12.13,<0.13.0"]
+build-backend = "uv_build"

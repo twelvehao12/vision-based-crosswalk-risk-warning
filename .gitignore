@@ -21,19 +21,10 @@ Thumbs.db
 *.onnx
 *.engine
 
-# Temporary audio files
-outputs/temp_audio/
+outputs/
 
-# Large generated videos
-outputs/videos/*.mp4
-outputs/videos/*.avi
-outputs/videos/*.mov
+assets/results/*.jpg
+assets/results/*.png
 
-# Keep README files in output folders if needed
-!outputs/videos/README.md
+src/vision_based_crosswalk_risk_warning/
 
-# Logs can be regenerated, but keep final CSV if desired
-# outputs/logs/*.csv
-
-# Screenshots can be regenerated, but selected examples may be kept
-# outputs/screenshots/*.jpg

@@ -8,6 +8,8 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 
+from src.device import resolve_device
+
 
 PERSON_CLASS_ID = 0
 VEHICLE_CLASS_IDS = {1, 2, 3, 5, 7}
@@ -327,6 +329,12 @@ class CrosswalkRiskPipeline:
         self.img_size = int(model_cfg["image_size"])
         self.tracker = model_cfg["tracker"]
 
+        self.device = resolve_device(
+            model_cfg.get("device", "auto")
+        )
+
+        print(f"Inference device: {self.device}")
+
         self.high_distance_px = float(risk_cfg["high_distance_px"])
         self.danger_distance_px = float(risk_cfg["danger_distance_px"])
         self.critical_distance_px = float(risk_cfg["critical_distance_px"])
@@ -630,6 +638,7 @@ class CrosswalkRiskPipeline:
                 conf=self.conf_threshold,
                 imgsz=self.img_size,
                 classes=[0, 1, 2, 3, 5, 7],
+                device=self.device,
                 verbose=False,
             )
 

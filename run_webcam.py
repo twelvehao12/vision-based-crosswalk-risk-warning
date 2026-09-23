@@ -2,6 +2,7 @@ import argparse
 from pathlib import Path
 
 import cv2
+import torch
 from ultralytics import YOLO
 
 
@@ -14,6 +15,18 @@ COCO_NAMES = {
     7: "truck",
 }
 
+def resolve_device(device: str) -> str:
+    if device != "auto":
+        return device
+
+    if torch.cuda.is_available():
+        return "cuda"
+
+    if torch.backends.mps.is_available():
+        return "mps"
+
+    return "cpu"
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -23,11 +36,21 @@ def main():
     parser.add_argument("--imgsz", type=int, default=960)
     parser.add_argument("--save", action="store_true", help="Save webcam output video")
     parser.add_argument("--output", type=str, default="outputs/videos/webcam_demo_output.mp4")
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="auto",
+        choices=["auto", "cpu", "mps", "cuda"],
+    )
     args = parser.parse_args()
 
     source = int(args.source) if args.source.isdigit() else args.source
 
     model = YOLO(args.model)
+
+    device = resolve_device(args.device)
+
+    print(f"Using device: {device}")
 
     cap = cv2.VideoCapture(source)
 
@@ -67,6 +90,7 @@ def main():
             conf=args.conf,
             imgsz=args.imgsz,
             classes=[0, 1, 2, 3, 5, 7],
+            device=device,
             verbose=False,
         )
 
