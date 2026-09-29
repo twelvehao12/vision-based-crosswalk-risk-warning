@@ -9,6 +9,8 @@ import numpy as np
 from ultralytics import YOLO
 
 from src.device import resolve_device
+from src.locales.zh_cn import pic_text2zh_cn as pic_text_trans
+from src.locales.zh_cn import risk_level2zh_cn as risk_level_trans
 
 
 PERSON_CLASS_ID = 0
@@ -295,7 +297,8 @@ def draw_bird_eye_panel(frame, roi_config, persons, vehicles, dangerous_pair, H,
     y0 = max(90, y0)
 
     frame[y0:y0 + bev_h, x0:x0 + bev_w] = bev
-    cv2.rectangle(frame, (x0, y0), (x0 + bev_w, y0 + bev_h), (255, 255, 255), 2)
+    cv2.rectangle(frame, (x0, y0), (x0 + bev_w,
+                  y0 + bev_h), (255, 255, 255), 2)
 
     return frame
 
@@ -309,15 +312,20 @@ class CrosswalkRiskPipeline:
         model_cfg = config["model"]
         risk_cfg = config["risk"]
 
-        self.input_video = resolve_path(self.project_root, paths["input_video"])
-        self.roi_config_path = resolve_path(self.project_root, paths["roi_config"])
-        self.output_video = resolve_path(self.project_root, paths["output_video"])
+        self.input_video = resolve_path(
+            self.project_root, paths["input_video"])
+        self.roi_config_path = resolve_path(
+            self.project_root, paths["roi_config"])
+        self.output_video = resolve_path(
+            self.project_root, paths["output_video"])
         self.event_log = resolve_path(self.project_root, paths["event_log"])
         self.frame_log = resolve_path(
             self.project_root,
-            paths.get("frame_log", "outputs/logs/frame_log_crosswalk_yolo11s_60s.csv")
+            paths.get(
+                "frame_log", "outputs/logs/frame_log_crosswalk_yolo11s_60s.csv")
         )
-        self.screenshot_dir = resolve_path(self.project_root, paths["screenshot_dir"])
+        self.screenshot_dir = resolve_path(
+            self.project_root, paths["screenshot_dir"])
 
         self.output_video.parent.mkdir(parents=True, exist_ok=True)
         self.event_log.parent.mkdir(parents=True, exist_ok=True)
@@ -338,29 +346,38 @@ class CrosswalkRiskPipeline:
         self.high_distance_px = float(risk_cfg["high_distance_px"])
         self.danger_distance_px = float(risk_cfg["danger_distance_px"])
         self.critical_distance_px = float(risk_cfg["critical_distance_px"])
-        self.distance_decrease_margin = float(risk_cfg["distance_decrease_margin"])
+        self.distance_decrease_margin = float(
+            risk_cfg["distance_decrease_margin"])
         self.history_length = int(risk_cfg["history_length"])
-        self.screenshot_cooldown_frames = int(risk_cfg["screenshot_cooldown_frames"])
+        self.screenshot_cooldown_frames = int(
+            risk_cfg["screenshot_cooldown_frames"])
         self.display_hold_frames = int(risk_cfg["display_hold_frames"])
 
         score_cfg = config.get("risk_score", {})
         self.proximity_far_px = float(score_cfg.get("proximity_far_px", 180))
-        self.proximity_high_px = float(score_cfg.get("proximity_high_px", self.high_distance_px))
-        self.proximity_danger_px = float(score_cfg.get("proximity_danger_px", self.danger_distance_px))
-        self.proximity_critical_px = float(score_cfg.get("proximity_critical_px", self.critical_distance_px))
+        self.proximity_high_px = float(score_cfg.get(
+            "proximity_high_px", self.high_distance_px))
+        self.proximity_danger_px = float(score_cfg.get(
+            "proximity_danger_px", self.danger_distance_px))
+        self.proximity_critical_px = float(score_cfg.get(
+            "proximity_critical_px", self.critical_distance_px))
         self.ttc_medium_sec = float(score_cfg.get("ttc_medium_sec", 4.0))
         self.ttc_high_sec = float(score_cfg.get("ttc_high_sec", 2.5))
         self.ttc_danger_sec = float(score_cfg.get("ttc_danger_sec", 1.5))
-        self.slow_closing_px_per_frame = float(score_cfg.get("slow_closing_px_per_frame", 5))
-        self.fast_closing_px_per_frame = float(score_cfg.get("fast_closing_px_per_frame", 12))
+        self.slow_closing_px_per_frame = float(
+            score_cfg.get("slow_closing_px_per_frame", 5))
+        self.fast_closing_px_per_frame = float(
+            score_cfg.get("fast_closing_px_per_frame", 12))
 
     def load_roi(self):
         with open(self.roi_config_path, "r", encoding="utf-8") as f:
             self.roi_config = json.load(f)
 
-        self.main_approach_zone = np.array(self.roi_config["vehicle_approach_zone"], dtype=np.int32)
+        self.main_approach_zone = np.array(
+            self.roi_config["vehicle_approach_zone"], dtype=np.int32)
         self.secondary_approach_zone = np.array(
-            self.roi_config.get("secondary_vehicle_approach_zone", self.roi_config["vehicle_approach_zone"]),
+            self.roi_config.get("secondary_vehicle_approach_zone",
+                                self.roi_config["vehicle_approach_zone"]),
             dtype=np.int32,
         )
 
@@ -381,8 +398,10 @@ class CrosswalkRiskPipeline:
                 }
             )
 
-        self.pedestrian_waiting_zone = np.array(self.roi_config["pedestrian_waiting_zone"], dtype=np.int32)
-        self.H_bev, self.bev_width, self.bev_height = setup_homography(self.roi_config)
+        self.pedestrian_waiting_zone = np.array(
+            self.roi_config["pedestrian_waiting_zone"], dtype=np.int32)
+        self.H_bev, self.bev_width, self.bev_height = setup_homography(
+            self.roi_config)
 
     def score_to_level(self, score):
         if score >= 75:
@@ -490,10 +509,12 @@ class CrosswalkRiskPipeline:
                     if len(hist) >= 5:
                         previous_d = hist[-5]
                         current_d = hist[-1]
-                        closing_speed = max(0.0, (previous_d - current_d) / 5.0)
+                        closing_speed = max(
+                            0.0, (previous_d - current_d) / 5.0)
                         distance_decreasing = current_d < previous_d - self.distance_decrease_margin
 
-                    current_approach_zone = p.get("approach_zone", self.main_approach_zone)
+                    current_approach_zone = p.get(
+                        "approach_zone", self.main_approach_zone)
 
                     vehicle_in_relevant_approach_zone = point_in_polygon(
                         v["point"],
@@ -578,12 +599,14 @@ class CrosswalkRiskPipeline:
         print("Frames:", frame_count)
 
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(str(self.output_video), fourcc, fps, (width, height))
+        writer = cv2.VideoWriter(
+            str(self.output_video), fourcc, fps, (width, height))
 
         model = YOLO(self.model_name)
 
         track_history = defaultdict(lambda: deque(maxlen=self.history_length))
-        pair_distance_history = defaultdict(lambda: deque(maxlen=self.history_length))
+        pair_distance_history = defaultdict(
+            lambda: deque(maxlen=self.history_length))
         last_screenshot_frame = -9999
 
         display_risk_level = "LOW"
@@ -730,20 +753,26 @@ class CrosswalkRiskPipeline:
                 else:
                     display_hold_until = frame_id + 15
 
-            draw_polygon(frame, self.roi_config["crosswalk_roi"], (0, 255, 255), "main crosswalk")
-            draw_polygon(frame, self.roi_config["vehicle_approach_zone"], (0, 0, 255), "main approach")
-            draw_polygon(frame, self.roi_config["pedestrian_waiting_zone"], (255, 0, 0), "waiting zone")
+            draw_polygon(
+                frame, self.roi_config["crosswalk_roi"], (0, 255, 255), "main crosswalk")
+            draw_polygon(
+                frame, self.roi_config["vehicle_approach_zone"], (0, 0, 255), "main approach")
+            draw_polygon(
+                frame, self.roi_config["pedestrian_waiting_zone"], (255, 0, 0), "waiting zone")
 
             if "secondary_crosswalk_roi" in self.roi_config:
-                draw_polygon(frame, self.roi_config["secondary_crosswalk_roi"], (0, 255, 0), "secondary crosswalk")
+                draw_polygon(
+                    frame, self.roi_config["secondary_crosswalk_roi"], (0, 255, 0), "secondary crosswalk")
 
             if "secondary_vehicle_approach_zone" in self.roi_config:
-                draw_polygon(frame, self.roi_config["secondary_vehicle_approach_zone"], (255, 0, 255), "secondary approach")
+                draw_polygon(
+                    frame, self.roi_config["secondary_vehicle_approach_zone"], (255, 0, 255), "secondary approach")
 
             for obj in persons + vehicles:
                 x1, y1, x2, y2 = obj["box"]
 
-                color = (0, 255, 255) if obj["class_id"] == PERSON_CLASS_ID else (255, 180, 0)
+                color = (0, 255, 255) if obj["class_id"] == PERSON_CLASS_ID else (
+                    255, 180, 0)
 
                 if dangerous_pair is not None:
                     if obj["track_id"] in [dangerous_pair[0]["track_id"], dangerous_pair[1]["track_id"]]:
@@ -766,7 +795,8 @@ class CrosswalkRiskPipeline:
 
             if dangerous_pair is not None:
                 p, v = dangerous_pair
-                cv2.line(frame, p["point"], v["point"], risk_color(risk_level), 3)
+                cv2.line(frame, p["point"], v["point"],
+                         risk_color(risk_level), 3)
 
                 if min_distance is not None:
                     mid_x = int((p["point"][0] + v["point"][0]) / 2)
@@ -799,7 +829,7 @@ class CrosswalkRiskPipeline:
 
             cv2.putText(
                 frame,
-                f"Risk Level: {display_risk_level} | Score: {display_risk_score}/100",
+                f"{pic_text_trans["Risk Level"]}: {risk_level_trans[display_risk_level]} | {pic_text_trans["Score"]}: {display_risk_score}/100",
                 (30, 45),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 1.2,
@@ -809,7 +839,7 @@ class CrosswalkRiskPipeline:
 
             cv2.putText(
                 frame,
-                f"Reason: {display_reason}",
+                f"{pic_text_trans["Reason"]}: {display_reason}",
                 (30, 75),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.7,
@@ -841,7 +871,8 @@ class CrosswalkRiskPipeline:
                         len(vehicles),
                         round(min_distance, 2) if min_distance is not None else "",
                         round(ttc_like_sec, 3) if ttc_like_sec is not None else "",
-                        round(closing_speed_px_per_frame, 3) if closing_speed_px_per_frame is not None else "",
+                        round(closing_speed_px_per_frame,
+                              3) if closing_speed_px_per_frame is not None else "",
                         reason,
                     ])
 
@@ -849,7 +880,8 @@ class CrosswalkRiskPipeline:
             should_log = risk_level in ["HIGH", "DANGER"]
 
             if should_log and frame_id - last_screenshot_frame >= self.screenshot_cooldown_frames:
-                screenshot_path = str(self.screenshot_dir / f"{risk_level}_yolo11s_frame_{frame_id}.jpg")
+                screenshot_path = str(
+                    self.screenshot_dir / f"{risk_level}_yolo11s_frame_{frame_id}.jpg")
                 cv2.imwrite(screenshot_path, frame)
                 last_screenshot_frame = frame_id
 
@@ -864,7 +896,8 @@ class CrosswalkRiskPipeline:
                         len(vehicles),
                         round(min_distance, 2) if min_distance is not None else "",
                         round(ttc_like_sec, 3) if ttc_like_sec is not None else "",
-                        round(closing_speed_px_per_frame, 3) if closing_speed_px_per_frame is not None else "",
+                        round(closing_speed_px_per_frame,
+                              3) if closing_speed_px_per_frame is not None else "",
                         reason,
                         screenshot_path,
                     ])

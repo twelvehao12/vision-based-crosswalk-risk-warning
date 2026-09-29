@@ -4,21 +4,16 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
-
 dependencies = [
-    "audioop-lts>=0.2.2",
     "gtts>=2.5.4",
-    "lap>=0.5.13",
     "matplotlib>=3.11.2",
     "numpy>=2.5.3",
     "opencv-python-headless>=5.0.0.93",
     "pandas>=3.0.6",
     "pydub>=0.25.1",
     "pyyaml>=6.0.3",
-    "ultralytics>=8.4.156",
-
-    "torch==2.14.0",
-    "torchvision==0.29.0",
+    "torch>=2.14.0",
+    "ultralytics>=8.4.160",
 ]
 
 [[tool.uv.index]]
@@ -30,7 +25,6 @@ explicit = true
 torch = [
   { index = "pytorch-cu126", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
-
 torchvision = [
   { index = "pytorch-cu126", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
