@@ -4,6 +4,8 @@ import cv2
 import pandas as pd
 import matplotlib.pyplot as plt
 
+from src.locales import get_locale, t
+
 
 def resolve_path(project_root: Path, path_value: str) -> Path:
     path = Path(path_value)
@@ -12,7 +14,7 @@ def resolve_path(project_root: Path, path_value: str) -> Path:
     return project_root / path
 
 
-def create_risk_score_timeline(project_root: Path, frame_log_path: str, output_path: str) -> Path:
+def create_risk_score_timeline(project_root: Path, frame_log_path: str, output_path: str, language: str | None = None) -> Path:
     frame_log_path = resolve_path(project_root, frame_log_path)
     output_path = resolve_path(project_root, output_path)
 
@@ -21,26 +23,37 @@ def create_risk_score_timeline(project_root: Path, frame_log_path: str, output_p
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    locale = get_locale(language)
+
+    # Without a CJK-capable font the translated labels render as tofu boxes.
+    plt.rcParams["font.sans-serif"] = locale["matplotlib_font"]
+    plt.rcParams["axes.unicode_minus"] = False
+
     df = pd.read_csv(frame_log_path)
 
     plt.figure(figsize=(12, 5))
     plt.plot(df["time_sec"], df["risk_score"], linewidth=2)
-    plt.axhline(25, linestyle="--", linewidth=1, label="MEDIUM threshold")
-    plt.axhline(50, linestyle="--", linewidth=1, label="HIGH threshold")
-    plt.axhline(75, linestyle="--", linewidth=1, label="DANGER threshold")
+    plt.axhline(25, linestyle="--", linewidth=1,
+                label=t(locale, "chart_text", "MEDIUM threshold"))
+    plt.axhline(50, linestyle="--", linewidth=1,
+                label=t(locale, "chart_text", "HIGH threshold"))
+    plt.axhline(75, linestyle="--", linewidth=1,
+                label=t(locale, "chart_text", "DANGER threshold"))
 
     danger_df = df[df["risk_level"] == "DANGER"]
     high_df = df[df["risk_level"] == "HIGH"]
 
     if len(high_df) > 0:
-        plt.scatter(high_df["time_sec"], high_df["risk_score"], label="HIGH samples", s=35)
+        plt.scatter(high_df["time_sec"], high_df["risk_score"],
+                    label=t(locale, "chart_text", "HIGH samples"), s=35)
 
     if len(danger_df) > 0:
-        plt.scatter(danger_df["time_sec"], danger_df["risk_score"], label="DANGER samples", s=50)
+        plt.scatter(danger_df["time_sec"], danger_df["risk_score"],
+                    label=t(locale, "chart_text", "DANGER samples"), s=50)
 
-    plt.title("Image-space Surrogate Risk Score Timeline")
-    plt.xlabel("Time (seconds)")
-    plt.ylabel("Risk score (0–100)")
+    plt.title(t(locale, "chart_text", "Image-space Surrogate Risk Score Timeline"))
+    plt.xlabel(t(locale, "chart_text", "Time (seconds)"))
+    plt.ylabel(t(locale, "chart_text", "Risk score (0–100)"))
     plt.ylim(0, 105)
     plt.grid(True, alpha=0.3)
     plt.legend()

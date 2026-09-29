@@ -4,6 +4,7 @@ import yaml
 
 from src.cv_pipeline import CrosswalkRiskPipeline
 from src.audio_warning import create_voice_warning_audio, merge_audio_to_video_h264
+from src.locales import DEFAULT_LOCALE, SUPPORTED_LOCALES
 from src.report_assets import create_risk_score_timeline, extract_representative_screenshots
 
 
@@ -25,6 +26,13 @@ def main():
         action="store_true",
         help="Run only the CV pipeline without generating voice warning video",
     )
+    parser.add_argument(
+        "--lang",
+        type=str,
+        default=None,
+        choices=list(SUPPORTED_LOCALES),
+        help="Language for the on-screen text, overrides config `language`",
+    )
 
     args = parser.parse_args()
 
@@ -36,7 +44,11 @@ def main():
 
     config = load_config(str(config_path))
 
-    pipeline = CrosswalkRiskPipeline(config=config, project_root=project_root)
+    language = args.lang or config.get("language", DEFAULT_LOCALE)
+    print(f"Language: {language}")
+
+    pipeline = CrosswalkRiskPipeline(
+        config=config, project_root=project_root, language=language)
     result = pipeline.run()
 
     if args.skip_audio:
@@ -65,12 +77,13 @@ def main():
         output_video_path=paths["output_video_h264"],
     )
 
-    print("Final video with English voice warning:", final_video)
+    print("Final video with voice warning:", final_video)
 
     timeline_path = create_risk_score_timeline(
         project_root=project_root,
         frame_log_path=paths["frame_log"],
         output_path=paths["risk_score_timeline"],
+        language=language,
     )
 
     print("Risk score timeline:", timeline_path)

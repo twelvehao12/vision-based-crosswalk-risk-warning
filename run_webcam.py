@@ -5,6 +5,8 @@ import cv2
 import torch
 from ultralytics import YOLO
 
+from src.locales import DEFAULT_LOCALE, SUPPORTED_LOCALES, get_locale, t
+
 
 COCO_NAMES = {
     0: "person",
@@ -42,7 +44,16 @@ def main():
         default="auto",
         choices=["auto", "cpu", "mps", "cuda"],
     )
+    parser.add_argument(
+        "--lang",
+        type=str,
+        default=DEFAULT_LOCALE,
+        choices=list(SUPPORTED_LOCALES),
+        help="Language for the on-screen text",
+    )
     args = parser.parse_args()
+
+    locale = get_locale(args.lang)
 
     source = int(args.source) if args.source.isdigit() else args.source
 
@@ -105,7 +116,8 @@ def main():
             for box, cls_id, conf, track_id in zip(boxes, class_ids, confs, track_ids):
                 x1, y1, x2, y2 = box
 
-                label = f"{COCO_NAMES.get(int(cls_id), cls_id)} ID:{int(track_id)} {conf:.2f}"
+                class_name = str(COCO_NAMES.get(int(cls_id), cls_id))
+                label = f"{t(locale, 'class_name', class_name)} ID:{int(track_id)} {conf:.2f}"
 
                 color = (0, 255, 255) if int(cls_id) == 0 else (255, 180, 0)
 
@@ -122,7 +134,7 @@ def main():
 
         cv2.putText(
             frame,
-            "Experimental real-time webcam mode",
+            t(locale, "pic_text", "Experimental real-time webcam mode"),
             (20, 35),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.9,
@@ -132,7 +144,8 @@ def main():
 
         cv2.putText(
             frame,
-            "ROI-based risk scoring requires camera-specific ROI calibration.",
+            t(locale, "pic_text",
+              "ROI-based risk scoring requires camera-specific ROI calibration."),
             (20, 70),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.65,
@@ -143,7 +156,7 @@ def main():
         if writer is not None:
             writer.write(frame)
 
-        cv2.imshow("Crosswalk Risk Warning - Webcam Demo", frame)
+        cv2.imshow(t(locale, "pic_text", "Crosswalk Risk Warning - Webcam Demo"), frame)
 
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break

@@ -1,5 +1,7 @@
 project:
   name: CCTV-based Pedestrian-Vehicle Risk Warning System at Unsignalized Crosswalks
+# On-screen text language: zh_cn | en_us (overridable with --lang)
+language: zh_cn
 paths:
   input_video: data/demo/crosswalk_best_60s.mp4
   roi_config: config/crosswalk_roi.json

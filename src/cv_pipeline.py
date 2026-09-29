@@ -9,8 +9,7 @@ import numpy as np
 from ultralytics import YOLO
 
 from src.device import resolve_device
-from src.locales.zh_cn import pic_text2zh_cn as pic_text_trans
-from src.locales.zh_cn import risk_level2zh_cn as risk_level_trans
+from src.locales import format_reason, get_locale, localize_reason, t
 
 
 PERSON_CLASS_ID = 0
@@ -207,7 +206,7 @@ def transform_polygon_homography(points, H):
     return transformed.astype(np.int32)
 
 
-def draw_bird_eye_panel(frame, roi_config, persons, vehicles, dangerous_pair, H, bev_w, bev_h, risk_level):
+def draw_bird_eye_panel(frame, roi_config, persons, vehicles, dangerous_pair, H, bev_w, bev_h, risk_level, locale):
     if H is None:
         return frame
 
@@ -235,10 +234,13 @@ def draw_bird_eye_panel(frame, roi_config, persons, vehicles, dangerous_pair, H,
             1,
         )
 
-    draw_bev_poly("crosswalk_roi", (0, 255, 255), "main")
-    draw_bev_poly("secondary_crosswalk_roi", (0, 255, 0), "secondary")
-    draw_bev_poly("vehicle_approach_zone", (0, 0, 255), "main app")
-    draw_bev_poly("secondary_vehicle_approach_zone", (255, 0, 255), "sec app")
+    draw_bev_poly("crosswalk_roi", (0, 255, 255), t(locale, "roi_label", "main"))
+    draw_bev_poly(
+        "secondary_crosswalk_roi", (0, 255, 0), t(locale, "roi_label", "secondary"))
+    draw_bev_poly(
+        "vehicle_approach_zone", (0, 0, 255), t(locale, "roi_label", "main app"))
+    draw_bev_poly(
+        "secondary_vehicle_approach_zone", (255, 0, 255), t(locale, "roi_label", "sec app"))
 
     for p in persons:
         bev_pt = p.get("bev_point")
@@ -282,7 +284,7 @@ def draw_bird_eye_panel(frame, roi_config, persons, vehicles, dangerous_pair, H,
 
     cv2.putText(
         bev,
-        "Bird's-eye view",
+        t(locale, "pic_text", "Bird's-eye view"),
         (10, bev_h - 12),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.55,
@@ -304,9 +306,11 @@ def draw_bird_eye_panel(frame, roi_config, persons, vehicles, dangerous_pair, H,
 
 
 class CrosswalkRiskPipeline:
-    def __init__(self, config, project_root: Path):
+    def __init__(self, config, project_root: Path, language: str | None = None):
         self.config = config
         self.project_root = Path(project_root)
+        self.language = language or config.get("language")
+        self.locale = get_locale(self.language)
 
         paths = config["paths"]
         model_cfg = config["model"]
@@ -342,6 +346,7 @@ class CrosswalkRiskPipeline:
         )
 
         print(f"Inference device: {self.device}")
+        print(f"Locale: {self.locale['suffix']}")
 
         self.high_distance_px = float(risk_cfg["high_distance_px"])
         self.danger_distance_px = float(risk_cfg["danger_distance_px"])
@@ -468,7 +473,8 @@ class CrosswalkRiskPipeline:
         """
         risk_score = 0
         risk_level = "LOW"
-        reason = "No pedestrian-related risk detected"
+        reason_template = "No pedestrian-related risk detected"
+        reason_params = {}
         min_distance = None
         dangerous_pair = None
         best_ttc_like_sec = None
@@ -478,6 +484,7 @@ class CrosswalkRiskPipeline:
             return (
                 "LOW",
                 "No pedestrian in crosswalk or waiting zone",
+                {},
                 0,
                 None,
                 None,
@@ -488,12 +495,12 @@ class CrosswalkRiskPipeline:
         if len(persons_waiting) > 0 and len(persons_in_crosswalk) == 0:
             risk_score = max(risk_score, 25)
             risk_level = self.score_to_level(risk_score)
-            reason = "Pedestrian waiting near unsignalized crosswalk"
+            reason_template = "Pedestrian waiting near unsignalized crosswalk"
 
         if len(persons_in_crosswalk) > 0:
             risk_score = max(risk_score, 35)
             risk_level = self.score_to_level(risk_score)
-            reason = "Pedestrian inside unsignalized crosswalk"
+            reason_template = "Pedestrian inside unsignalized crosswalk"
 
             for p in persons_in_crosswalk:
                 for v in vehicles:
@@ -548,32 +555,37 @@ class CrosswalkRiskPipeline:
                         best_ttc_like_sec = ttc_like_sec
                         best_closing_speed = closing_speed
 
+                        reason_params = {
+                            "crosswalk": p.get("crosswalk_name", "crosswalk")
+                        }
+
                         if risk_level == "DANGER":
                             if d < self.critical_distance_px:
-                                reason = f'Pedestrian in {p.get("crosswalk_name", "crosswalk")} and vehicle critically close'
+                                reason_template = "Pedestrian in {crosswalk} and vehicle critically close"
                             elif ttc_like_sec is not None and ttc_like_sec < self.ttc_danger_sec:
-                                reason = f'Pedestrian in {p.get("crosswalk_name", "crosswalk")} and short TTC-like risk detected'
+                                reason_template = "Pedestrian in {crosswalk} and short TTC-like risk detected"
                             elif distance_decreasing:
-                                reason = f'Pedestrian in {p.get("crosswalk_name", "crosswalk")}, vehicle approaching, and distance decreasing'
+                                reason_template = "Pedestrian in {crosswalk}, vehicle approaching, and distance decreasing"
                             else:
-                                reason = f'Pedestrian in {p.get("crosswalk_name", "crosswalk")} and high surrogate risk score detected'
+                                reason_template = "Pedestrian in {crosswalk} and high surrogate risk score detected"
 
                         elif risk_level == "HIGH":
                             if d < self.high_distance_px:
-                                reason = f'Pedestrian in {p.get("crosswalk_name", "crosswalk")} and vehicle close'
+                                reason_template = "Pedestrian in {crosswalk} and vehicle close"
                             elif vehicle_in_relevant_approach_zone:
-                                reason = f'Pedestrian in {p.get("crosswalk_name", "crosswalk")} and vehicle in approach zone'
+                                reason_template = "Pedestrian in {crosswalk} and vehicle in approach zone"
                             else:
-                                reason = f'Pedestrian in {p.get("crosswalk_name", "crosswalk")} and elevated surrogate risk score'
+                                reason_template = "Pedestrian in {crosswalk} and elevated surrogate risk score"
 
                         elif risk_level == "MEDIUM":
-                            reason = f'Pedestrian in {p.get("crosswalk_name", "crosswalk")} with moderate surrogate risk score'
+                            reason_template = "Pedestrian in {crosswalk} with moderate surrogate risk score"
 
         risk_score = int(min(max(risk_score, 0), 100))
 
         return (
             risk_level,
-            reason,
+            reason_template,
+            reason_params,
             risk_score,
             min_distance,
             dangerous_pair,
@@ -611,7 +623,8 @@ class CrosswalkRiskPipeline:
 
         display_risk_level = "LOW"
         display_risk_score = 0
-        display_reason = "No pedestrian-related risk detected"
+        display_reason = t(
+            self.locale, "reason", "No pedestrian-related risk detected")
         display_hold_until = 0
 
         with open(self.event_log, "w", newline="", encoding="utf-8") as f:
@@ -725,7 +738,8 @@ class CrosswalkRiskPipeline:
 
             (
                 risk_level,
-                reason,
+                reason_template,
+                reason_params,
                 risk_score,
                 min_distance,
                 dangerous_pair,
@@ -740,13 +754,17 @@ class CrosswalkRiskPipeline:
                 fps=fps,
             )
 
+            # Logs stay English, the on-frame banner is localized.
+            reason = format_reason(reason_template, reason_params)
+
             if (
                 SEVERITY[risk_level] > SEVERITY[display_risk_level]
                 or frame_id >= display_hold_until
             ):
                 display_risk_level = risk_level
                 display_risk_score = risk_score
-                display_reason = reason
+                display_reason = localize_reason(
+                    self.locale, reason_template, reason_params)
 
                 if risk_level in ["HIGH", "DANGER"]:
                     display_hold_until = frame_id + self.display_hold_frames
@@ -754,19 +772,24 @@ class CrosswalkRiskPipeline:
                     display_hold_until = frame_id + 15
 
             draw_polygon(
-                frame, self.roi_config["crosswalk_roi"], (0, 255, 255), "main crosswalk")
+                frame, self.roi_config["crosswalk_roi"], (0, 255, 255),
+                t(self.locale, "roi_label", "main crosswalk"))
             draw_polygon(
-                frame, self.roi_config["vehicle_approach_zone"], (0, 0, 255), "main approach")
+                frame, self.roi_config["vehicle_approach_zone"], (0, 0, 255),
+                t(self.locale, "roi_label", "main approach"))
             draw_polygon(
-                frame, self.roi_config["pedestrian_waiting_zone"], (255, 0, 0), "waiting zone")
+                frame, self.roi_config["pedestrian_waiting_zone"], (255, 0, 0),
+                t(self.locale, "roi_label", "waiting zone"))
 
             if "secondary_crosswalk_roi" in self.roi_config:
                 draw_polygon(
-                    frame, self.roi_config["secondary_crosswalk_roi"], (0, 255, 0), "secondary crosswalk")
+                    frame, self.roi_config["secondary_crosswalk_roi"], (0, 255, 0),
+                    t(self.locale, "roi_label", "secondary crosswalk"))
 
             if "secondary_vehicle_approach_zone" in self.roi_config:
                 draw_polygon(
-                    frame, self.roi_config["secondary_vehicle_approach_zone"], (255, 0, 255), "secondary approach")
+                    frame, self.roi_config["secondary_vehicle_approach_zone"], (255, 0, 255),
+                    t(self.locale, "roi_label", "secondary approach"))
 
             for obj in persons + vehicles:
                 x1, y1, x2, y2 = obj["box"]
@@ -781,7 +804,7 @@ class CrosswalkRiskPipeline:
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
                 cv2.circle(frame, obj["point"], 4, color, -1)
 
-                label = f'{obj["class_name"]} ID:{obj["track_id"]} {obj["conf"]:.2f}'
+                label = f'{t(self.locale, "class_name", obj["class_name"])} ID:{obj["track_id"]} {obj["conf"]:.2f}'
 
                 cv2.putText(
                     frame,
@@ -822,6 +845,7 @@ class CrosswalkRiskPipeline:
                 bev_w=self.bev_width,
                 bev_h=self.bev_height,
                 risk_level=risk_level,
+                locale=self.locale,
             )
 
             banner_color = risk_color(display_risk_level)
@@ -829,7 +853,7 @@ class CrosswalkRiskPipeline:
 
             cv2.putText(
                 frame,
-                f"{pic_text_trans["Risk Level"]}: {risk_level_trans[display_risk_level]} | {pic_text_trans["Score"]}: {display_risk_score}/100",
+                f"{t(self.locale, "pic_text", "Risk Level")}: {t(self.locale, "risk_level", display_risk_level)} | {t(self.locale, "pic_text", "Score")}: {display_risk_score}/100",
                 (30, 45),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 1.2,
@@ -839,7 +863,7 @@ class CrosswalkRiskPipeline:
 
             cv2.putText(
                 frame,
-                f"{pic_text_trans["Reason"]}: {display_reason}",
+                f"{t(self.locale, "pic_text", "Reason")}: {display_reason}",
                 (30, 75),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.7,
@@ -850,7 +874,8 @@ class CrosswalkRiskPipeline:
             if display_risk_level == "DANGER":
                 cv2.putText(
                     frame,
-                    "AUDIO WARNING: Pedestrian crossing risk detected!",
+                    t(self.locale, "pic_text",
+                      "AUDIO WARNING: Pedestrian crossing risk detected!"),
                     (30, height - 40),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.8,
