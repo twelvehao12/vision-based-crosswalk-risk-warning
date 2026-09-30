@@ -49,7 +49,10 @@ audio:
 # Real-time webcam mode (run_webcam.py).
 # `roi_config` must be calibrated for THIS camera: the shared calibration above
 # is tied to the demo video resolution and run_webcam.py rejects a size
-# mismatch. Build one with:
+# mismatch. Draw the regions on the camera's own view with:
+#   python tools/calibrate_roi.py --source 0
+# or, when the camera points at a screen playing the demo video, remap the
+# existing calibration instead:
 #   python tools/make_webcam_roi.py --source 0 --interactive
 webcam:
   source: 0

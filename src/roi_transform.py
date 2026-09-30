@@ -1,4 +1,4 @@
-"""Remap a ROI calibration onto a different camera frame.
+"""Shared ROI calibration helpers: schema, remapping and validation.
 
 A ROI file is calibrated for one specific camera and resolution (recorded in
 its ``frame_width``/``frame_height``). To reuse it on a webcam you point at a
@@ -8,6 +8,9 @@ in the camera frame, and the result is written to a new file.
 The pixel-based risk thresholds travel with the polygons: a smaller image
 shrinks both the distances and the boxes, so the calibration's ``risk_scale``
 records the uniform scale factor for the pipeline to apply.
+
+This module stays free of heavy imports so the calibration tools can use it
+without pulling in the detection pipeline.
 """
 
 from pathlib import Path
@@ -23,6 +26,12 @@ POLYGON_KEYS = (
     "secondary_crosswalk_roi",
     "secondary_vehicle_approach_zone",
 )
+
+# Split of POLYGON_KEYS: the three the pipeline requires, and the optional
+# pair describing a secondary crossing, which is only valid when both are
+# present. Slicing keeps the two views from drifting apart.
+REQUIRED_POLYGON_KEYS = POLYGON_KEYS[:3]
+SECONDARY_POLYGON_KEYS = POLYGON_KEYS[3:]
 
 # Relative difference below which sx and sy count as one uniform scale.
 UNIFORM_SCALE_TOLERANCE = 0.01
@@ -71,16 +80,57 @@ def fit_rect(reference_width, reference_height, rect, keep_aspect=True):
     return sx, sy, ox, oy
 
 
-def _remap_point(point, sx, sy, ox, oy, frame_width, frame_height):
-    x = point[0] * sx + ox
-    y = point[1] * sy + oy
+def clamp_point(x, y, frame_width, frame_height):
+    """Round a point to whole pixels and clamp it inside the frame.
 
-    # Round to whole pixels, then clamp so a rect touching the frame edge
-    # cannot produce the out-of-bounds coordinate the pipeline rejects.
+    Returns `[x, y]` ints within `[0, frame_width - 1] x [0, frame_height - 1]`,
+    so a point on the frame edge cannot become the out-of-bounds coordinate the
+    pipeline rejects.
+    """
     x = min(max(int(round(x)), 0), frame_width - 1)
     y = min(max(int(round(y)), 0), frame_height - 1)
 
     return [x, y]
+
+
+def polygon_area(points):
+    """Absolute area of a polygon, or 0.0 when it cannot enclose anything."""
+    if not points or len(points) < 3:
+        return 0.0
+
+    total = 0.0
+    count = len(points)
+
+    for index in range(count):
+        x1, y1 = points[index]
+        x2, y2 = points[(index + 1) % count]
+        total += x1 * y2 - x2 * y1
+
+    return abs(total) / 2.0
+
+
+def estimate_risk_scale(reference_polygon, target_polygon):
+    """Estimate a risk scale from the pixel size of two matching polygons.
+
+    Pixel distances are linear, so the ratio of the square roots of the areas
+    is the dimensionally correct multiplier; a raw area ratio would square the
+    thresholds. Returns None when either polygon is too small to measure, so
+    the caller can keep whatever value it had.
+    """
+    reference_area = polygon_area(reference_polygon)
+    target_area = polygon_area(target_polygon)
+
+    if reference_area <= 0 or target_area <= 0:
+        return None
+
+    return round(math.sqrt(target_area / reference_area), 6)
+
+
+def _remap_point(point, sx, sy, ox, oy, frame_width, frame_height):
+    # Clamping matters because a rect touching the frame edge would otherwise
+    # produce the out-of-bounds coordinate the pipeline rejects.
+    return clamp_point(
+        point[0] * sx + ox, point[1] * sy + oy, frame_width, frame_height)
 
 
 def remap_roi_config(roi_config, sx, sy, ox, oy, frame_width, frame_height,
@@ -140,3 +190,147 @@ def remap_roi_config(roi_config, sx, sy, ox, oy, frame_width, frame_height,
     }
 
     return remapped
+
+
+# --- Validation -----------------------------------------------------------
+#
+# These mirror the checks the pipeline applies when it loads a ROI file, so a
+# calibration tool can prove its output will be accepted before writing it.
+# The rules and the wording of the errors are kept identical to
+# `CrosswalkRiskPipeline._validate_polygon`, `_validate_roi_structure` and
+# `validate_roi_for_frame` in src/cv_pipeline.py.
+
+
+def validate_roi_polygon(name, points, required_points=None):
+    if not isinstance(points, list):
+        raise ValueError(f"ROI polygon '{name}' must be a list of points")
+
+    minimum = required_points if required_points is not None else 3
+    if len(points) < minimum:
+        raise ValueError(
+            f"ROI polygon '{name}' needs at least {minimum} points, "
+            f"got {len(points)}"
+        )
+
+    for index, point in enumerate(points):
+        if not isinstance(point, (list, tuple)) or len(point) != 2:
+            raise ValueError(
+                f"ROI polygon '{name}' point {index} must be an [x, y] pair"
+            )
+
+        for value in point:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(
+                    f"ROI polygon '{name}' point {index} has a non-numeric "
+                    f"coordinate: {value!r}"
+                )
+            if not math.isfinite(value):
+                raise ValueError(
+                    f"ROI polygon '{name}' point {index} has a non-finite "
+                    f"coordinate: {value!r}"
+                )
+
+
+def validate_roi_structure(roi_config):
+    for name in REQUIRED_POLYGON_KEYS:
+        if name not in roi_config:
+            raise ValueError(f"ROI config is missing required key '{name}'")
+        validate_roi_polygon(name, roi_config[name])
+
+    secondary = [name for name in SECONDARY_POLYGON_KEYS if name in roi_config]
+    if len(secondary) == 1:
+        raise ValueError(
+            f"ROI config defines '{secondary[0]}' without its counterpart; "
+            "secondary crosswalk and secondary approach zone must be "
+            "provided together"
+        )
+    for name in secondary:
+        validate_roi_polygon(name, roi_config[name])
+
+    for name in ("frame_width", "frame_height"):
+        value = roi_config.get(name)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(
+                f"ROI config needs a positive integer '{name}' describing "
+                "the calibrated frame size"
+            )
+
+    risk_scale = roi_config.get("risk_scale", 1.0)
+    if isinstance(risk_scale, bool) or not isinstance(risk_scale, (int, float)):
+        raise ValueError("ROI config 'risk_scale' must be a number")
+    if not math.isfinite(risk_scale) or risk_scale <= 0:
+        raise ValueError(
+            f"ROI config 'risk_scale' must be a positive finite number, "
+            f"got {risk_scale!r}")
+
+    homography_cfg = roi_config.get("homography", {})
+    if homography_cfg.get("enabled", False):
+        if "src_points" not in homography_cfg:
+            raise ValueError(
+                "ROI config enables homography but has no 'src_points'")
+        validate_roi_polygon(
+            "homography.src_points", homography_cfg["src_points"],
+            required_points=4)
+
+        for name in ("bev_width", "bev_height"):
+            value = homography_cfg.get(name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(
+                    f"ROI config needs a positive integer 'homography.{name}'")
+
+
+def validate_roi_points_for_frame(roi_config, frame_width, frame_height,
+                                  source_path=None):
+    """Check that a ROI was calibrated for the frame it is applied to.
+
+    Coordinates are never rescaled implicitly: a ROI calibrated for one camera
+    or resolution is meaningless on another, so mismatches fail loudly instead
+    of drawing zone outlines in the wrong place.
+    """
+    calibrated_width = roi_config["frame_width"]
+    calibrated_height = roi_config["frame_height"]
+    label = source_path if source_path is not None else "<roi config>"
+
+    if (calibrated_width, calibrated_height) != (frame_width, frame_height):
+        raise ValueError(
+            f"ROI calibration size mismatch for {label}: "
+            f"calibrated for {calibrated_width}x{calibrated_height}, but the "
+            f"input frame is {frame_width}x{frame_height}. Calibrate a new "
+            "ROI for this camera and resolution; coordinates are not scaled "
+            "automatically."
+        )
+
+    homography_cfg = roi_config.get("homography", {})
+    polygon_keys: list[str] = list(POLYGON_KEYS)
+    if homography_cfg.get("enabled", False):
+        polygon_keys.append("homography.src_points")
+
+    for key in polygon_keys:
+        if key == "homography.src_points":
+            points = homography_cfg["src_points"]
+        elif key in roi_config:
+            points = roi_config[key]
+        else:
+            continue
+
+        for index, (x, y) in enumerate(points):
+            if not (0 <= x < frame_width and 0 <= y < frame_height):
+                raise ValueError(
+                    f"ROI point {index} of '{key}' at ({x}, {y}) is outside "
+                    f"the calibrated frame {frame_width}x{frame_height} "
+                    f"({label})"
+                )
+
+
+def validate_roi_config(roi_config, frame_width=None, frame_height=None,
+                        source_path=None):
+    """Run every check the pipeline applies, optionally including frame size.
+
+    Pass `frame_width`/`frame_height` to also assert the calibration matches a
+    specific capture size.
+    """
+    validate_roi_structure(roi_config)
+
+    if frame_width is not None and frame_height is not None:
+        validate_roi_points_for_frame(
+            roi_config, frame_width, frame_height, source_path)

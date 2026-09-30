@@ -174,7 +174,7 @@ The ROI file is located at:
 config/crosswalk_roi.json
 ```
 
-Each ROI file also records the frame size it was calibrated for (`frame_width` / `frame_height`) and, optionally, a `risk_scale` factor applied to the pixel-based risk thresholds. The pipeline refuses to run when a ROI is applied to a frame of a different size, because its coordinates and thresholds would no longer be meaningful. See section 17 for how a webcam calibration is produced from this file.
+Each ROI file also records the frame size it was calibrated for (`frame_width` / `frame_height`) and, optionally, a `risk_scale` factor applied to the pixel-based risk thresholds. The pipeline refuses to run when a ROI is applied to a frame of a different size, because its coordinates and thresholds would no longer be meaningful. Section 17 covers calibration: `tools/calibrate_roi.py` draws these regions onto any camera or video, and `tools/make_webcam_roi.py` reuses the file above on a camera pointed at the demo video.
 
 Because this is an unsignalized crosswalk, vehicle presence alone is not treated as dangerous. The system increases risk only when pedestrians are inside or near the crosswalk and vehicles are close, approaching, or located in relevant approach zones.
 
@@ -437,7 +437,33 @@ This repository also includes a real-time webcam mode. It runs the same pipeline
 
 ### 17.1 Calibrate the camera first
 
-`config/crosswalk_roi.json` is calibrated for the 1200x1100 demo video, and the pipeline rejects a ROI whose calibration size does not match the frame it receives. Point the camera at a screen playing that video, then build a calibration for the camera:
+`config/crosswalk_roi.json` is calibrated for the 1200x1100 demo video, and the pipeline rejects a ROI whose calibration size does not match the frame it receives. A camera needs its own calibration, produced one of two ways.
+
+**From scratch — any camera, any junction.** `tools/calibrate_roi.py` shows a frame from the source and you draw each region on it:
+
+```
+python tools/calibrate_roi.py --source 0
+```
+
+The frame is frozen so the scene cannot move under the cursor; press `f` or space to check the live feed. Left click adds a point, right click or `u` undoes one, and `n` moves through the regions in the order the pipeline needs them:
+
+| Key | Region |
+|---|---|
+| `1` | `crosswalk_roi` — the crossing surface |
+| `2` | `vehicle_approach_zone` — the lane vehicles approach from |
+| `3` | `pedestrian_waiting_zone` — where pedestrians wait |
+| `4` | `secondary_crosswalk_roi` — optional second crossing |
+| `5` | `secondary_vehicle_approach_zone` — its approach lane |
+
+After the third region the tool asks whether the junction has a second crossing; regions 4 and 5 are written together or not at all, because the pipeline rejects one without the other. `c` clears the active region, `x` clears everything, `H` captures the four bird's-eye corner points (top-left, top-right, bottom-right, bottom-left), and `s` validates and saves. Number keys work at any time, so you can jump back and redraw a region.
+
+The frame size is taken from the source itself, which is what the pipeline checks against. Useful options:
+
+* `--init-from config/crosswalk_roi.json` — start from an existing calibration instead of an empty frame (ignored when its frame size differs from the source).
+* `--risk-scale-from config/crosswalk_roi.json` — estimate the pixel threshold scale from how large the drawn crosswalk is compared with the reference one. The estimate only holds when the camera geometry resembles the reference, so verify the risk levels on site; `--risk-scale` sets the factor by hand instead.
+* `--bev-size WxH` — bird's-eye panel size (default 320x220); `--start-frame N` skips titles or fades in a video.
+
+**From the demo video's calibration — camera pointed at a screen.** `tools/make_webcam_roi.py` instead moves the existing polygons onto the camera frame by scale and offset:
 
 ```
 python tools/make_webcam_roi.py --source 0 --interactive
@@ -449,7 +475,7 @@ Drag a box around the video on the screen and press ENTER/SPACE, check that the 
 python tools/make_webcam_roi.py --frame-size 1280x720 --rect 100,50,640,480
 ```
 
-Polygons are mapped by scale and offset into the camera frame, and the resulting `risk_scale` in the output file scales the pixel-based risk thresholds to match, so scoring stays equivalent to the original calibration. The source calibration is never modified.
+The resulting `risk_scale` in the output file scales the pixel-based risk thresholds to match, so scoring stays equivalent to the original calibration. The source calibration is never modified. This path assumes the camera roughly faces the screen without strong perspective distortion; `tools/calibrate_roi.py` is more accurate for a permanent installation.
 
 ### 17.2 Run
 
@@ -481,7 +507,8 @@ vision-based-crosswalk-risk-warning/
 │   ├── crosswalk_roi.json
 │   └── webcam_roi.json        (generated per camera, not tracked)
 ├── tools/
-│   └── make_webcam_roi.py
+│   ├── calibrate_roi.py       (draw a calibration for any camera)
+│   └── make_webcam_roi.py     (remap an existing calibration)
 ├── src/
 │   ├── audio_warning.py
 │   ├── config.py
@@ -489,6 +516,7 @@ vision-based-crosswalk-risk-warning/
 │   ├── device.py
 │   ├── locales/
 │   ├── report_assets.py
+│   ├── roi_editor.py
 │   └── roi_transform.py
 ├── data/
 │   └── demo/
@@ -519,8 +547,8 @@ vision-based-crosswalk-risk-warning/
 * The system may be affected by occlusion, lighting changes, and small distant pedestrians.
 * YOLO may produce false positives or miss objects in difficult conditions.
 * Voice warning is simulated and not connected to real speaker hardware, dashcam systems, navigation systems, or V2X devices.
-* Webcam mode requires camera-specific ROI calibration (`tools/make_webcam_roi.py`) for full risk scoring.
-* The webcam ROI is derived from the demo video's calibration by scale and offset, so it assumes the camera roughly faces the screen without strong perspective distortion. Re-calibrating by hand is more accurate for a permanent installation.
+* Webcam mode requires camera-specific ROI calibration (`tools/calibrate_roi.py`, or `tools/make_webcam_roi.py` when reusing the demo video's) for full risk scoring.
+* The demo video's ROI is tied to one camera height, tilt and lens. Reused on a different view by scale and offset, it assumes the camera roughly faces the screen without strong perspective distortion; the pixel-based risk thresholds are only equivalent when the geometry matches, so an estimated `risk_scale` is a starting point that needs verifying on site. Drawing the regions directly with `tools/calibrate_roi.py` is more accurate for a permanent installation.
 
 ---
 

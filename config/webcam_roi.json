@@ -1,0 +1,70 @@
+{
+  "frame_width": 640,
+  "frame_height": 480,
+  "crosswalk_roi": [
+    [
+      198,
+      248
+    ],
+    [
+      452,
+      163
+    ],
+    [
+      461,
+      277
+    ],
+    [
+      246,
+      380
+    ]
+  ],
+  "vehicle_approach_zone": [
+    [
+      318,
+      150
+    ],
+    [
+      459,
+      148
+    ],
+    [
+      428,
+      194
+    ],
+    [
+      316,
+      226
+    ]
+  ],
+  "pedestrian_waiting_zone": [
+    [
+      141,
+      260
+    ],
+    [
+      176,
+      325
+    ],
+    [
+      249,
+      296
+    ],
+    [
+      205,
+      230
+    ]
+  ],
+  "risk_scale": 1.0,
+  "risk_scale_source": "default",
+  "video_id": "camera_0",
+  "calibration": {
+    "tool": "tools/calibrate_roi.py",
+    "source": "0",
+    "source_kind": "camera",
+    "frame_size": "640x480",
+    "created_utc": "2026-09-30T13:35:01+00:00",
+    "init_from": null,
+    "risk_scale_from": null
+  }
+}
