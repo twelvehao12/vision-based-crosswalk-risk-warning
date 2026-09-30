@@ -46,7 +46,16 @@ audio:
   danger_text: Warning. Vehicle approaching. Please stop.
   high_cooldown_sec: 4.0
   danger_cooldown_sec: 3.0
+# Real-time webcam mode (run_webcam.py).
+# `roi_config` must be calibrated for THIS camera: the shared calibration above
+# is tied to the demo video resolution and run_webcam.py rejects a size
+# mismatch. Build one with:
+#   python tools/make_webcam_roi.py --source 0 --interactive
 webcam:
   source: 0
+  roi_config: config/webcam_roi.json
   output_video: outputs/videos/webcam_demo_output.mp4
+  event_log: outputs/logs/webcam_event_log.csv
+  frame_log: outputs/logs/webcam_frame_log.csv
+  screenshot_dir: outputs/screenshots/webcam
   show_window: true

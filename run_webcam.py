@@ -1,172 +1,140 @@
-import argparse
+"""Real-time webcam risk warning.
+
+This is a thin front-end over `CrosswalkRiskPipeline`: it only picks the
+capture source and the ROI calibration, then hands both to the same per-frame
+pipeline `main.py` uses, so detection, risk scoring, ROI overlays, the
+bird's-eye panel and the warning banner all behave identically.
+
+A webcam sees a different frame than the calibrated video, so it needs its own
+ROI file. Build one with:
+
+    python tools/make_webcam_roi.py --source 0 --interactive
+
+Then run:
+
+    python run_webcam.py --roi-config config/webcam_roi.json --source 0
+"""
+
 from pathlib import Path
+import argparse
+import copy
 
-import cv2
-import torch
-from ultralytics import YOLO
-
-from src.locales import DEFAULT_LOCALE, SUPPORTED_LOCALES, get_locale, t
+from src.config import load_config
+from src.cv_pipeline import CrosswalkRiskPipeline
+from src.locales import DEFAULT_LOCALE, SUPPORTED_LOCALES
 
 
-COCO_NAMES = {
-    0: "person",
-    1: "bicycle",
-    2: "car",
-    3: "motorcycle",
-    5: "bus",
-    7: "truck",
-}
+DEFAULT_CONFIG = "config/config.yaml"
 
-def resolve_device(device: str) -> str:
-    if device != "auto":
-        return device
 
-    if torch.cuda.is_available():
-        return "cuda"
+def parse_source(source):
+    """Keep URLs and file paths as strings, but convert camera indices to ints."""
+    text = str(source).strip()
 
-    if torch.backends.mps.is_available():
-        return "mps"
+    if text.lstrip("-").isdigit():
+        return int(text)
 
-    return "cpu"
+    return text
+
+
+def build_webcam_config(config, args):
+    """Build an isolated pipeline config using CLI > webcam > shared values."""
+    runtime_config = copy.deepcopy(config)
+
+    paths = runtime_config.setdefault("paths", {})
+    model_cfg = runtime_config.setdefault("model", {})
+    webcam_cfg = runtime_config.get("webcam", {})
+
+    project_root = Path(__file__).resolve().parent
+
+    roi_config = (
+        args.roi_config or webcam_cfg.get("roi_config") or paths["roi_config"])
+
+    # The camera calibration is built by a separate tool, so a missing file
+    # should explain itself rather than fail deep inside the pipeline.
+    if args.roi_config is None and "roi_config" in webcam_cfg:
+        if not (project_root / roi_config).exists():
+            print(f"Webcam ROI '{roi_config}' not found; falling back to "
+                  f"'{paths['roi_config']}'.")
+            print("Run 'python tools/make_webcam_roi.py --source 0 "
+                  "--interactive' to calibrate this camera.")
+            roi_config = paths["roi_config"]
+
+    paths["roi_config"] = roi_config
+    paths["output_video"] = (
+        args.output or webcam_cfg.get("output_video") or paths["output_video"])
+    paths["event_log"] = webcam_cfg.get(
+        "event_log", "outputs/logs/webcam_event_log.csv")
+    paths["frame_log"] = webcam_cfg.get(
+        "frame_log", "outputs/logs/webcam_frame_log.csv")
+    paths["screenshot_dir"] = webcam_cfg.get(
+        "screenshot_dir", "outputs/screenshots/webcam")
+
+    if args.model is not None:
+        model_cfg["name"] = args.model
+    if args.conf is not None:
+        model_cfg["confidence_threshold"] = args.conf
+    if args.imgsz is not None:
+        model_cfg["image_size"] = args.imgsz
+    if args.device is not None:
+        model_cfg["device"] = args.device
+
+    language = args.lang or runtime_config.get("language", DEFAULT_LOCALE)
+
+    source = parse_source(
+        args.source if args.source is not None else webcam_cfg.get("source", 0))
+
+    show_window = bool(webcam_cfg.get("show_window", True))
+
+    return runtime_config, source, language, show_window
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--source", type=str, default="0", help="Webcam index or video/RTSP source")
-    parser.add_argument("--model", type=str, default="yolo11s.pt")
-    parser.add_argument("--conf", type=float, default=0.25)
-    parser.add_argument("--imgsz", type=int, default=960)
-    parser.add_argument("--save", action="store_true", help="Save webcam output video")
-    parser.add_argument("--output", type=str, default="outputs/videos/webcam_demo_output.mp4")
-    parser.add_argument(
-        "--device",
-        type=str,
-        default="auto",
-        choices=["auto", "cpu", "mps", "cuda"],
-    )
-    parser.add_argument(
-        "--lang",
-        type=str,
-        default=DEFAULT_LOCALE,
-        choices=list(SUPPORTED_LOCALES),
-        help="Language for the on-screen text",
-    )
+    parser.add_argument("--config", type=str, default=DEFAULT_CONFIG,
+                        help="Path to config YAML file")
+    parser.add_argument("--roi-config", type=str, default=None,
+                        help="Path to camera-specific ROI JSON; overrides config")
+    parser.add_argument("--source", type=str, default=None,
+                        help="Webcam index or video/RTSP source; overrides config")
+    parser.add_argument("--model", type=str, default=None)
+    parser.add_argument("--conf", type=float, default=None)
+    parser.add_argument("--imgsz", type=int, default=None)
+    parser.add_argument("--device", type=str, default=None,
+                        choices=["cpu", "mps", "cuda"])
+    parser.add_argument("--save", action="store_true",
+                        help="Save webcam output video")
+    parser.add_argument("--output", type=str, default=None)
+    parser.add_argument("--lang", type=str, default=None,
+                        choices=list(SUPPORTED_LOCALES),
+                        help="Language for the on-screen text; overrides config")
     args = parser.parse_args()
 
-    locale = get_locale(args.lang)
+    project_root = Path(__file__).resolve().parent
 
-    source = int(args.source) if args.source.isdigit() else args.source
+    config_path = Path(args.config)
+    if not config_path.is_absolute():
+        config_path = project_root / config_path
 
-    model = YOLO(args.model)
+    config = load_config(config_path)
+    runtime_config, source, language, show_window = build_webcam_config(
+        config, args)
 
-    device = resolve_device(args.device)
+    print(f"Language: {language}")
+    print("Webcam/video source:", source)
+    print("ROI config:", runtime_config["paths"]["roi_config"])
 
-    print(f"Using device: {device}")
+    if show_window:
+        print("Press 'q' to quit.")
 
-    cap = cv2.VideoCapture(source)
+    pipeline = CrosswalkRiskPipeline(
+        config=runtime_config, project_root=project_root, language=language)
 
-    if not cap.isOpened():
-        raise RuntimeError(f"Cannot open webcam/video source: {args.source}")
+    result = pipeline.run(
+        source=source, show_window=show_window, save_video=args.save)
 
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    if fps <= 0:
-        fps = 30
-
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-    writer = None
-
-    if args.save:
-        output_path = Path(args.output)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
-
-        print("Saving webcam demo to:", output_path)
-
-    print("Press 'q' to quit.")
-
-    while True:
-        ret, frame = cap.read()
-
-        if not ret:
-            break
-
-        results = model.track(
-            frame,
-            persist=True,
-            tracker="bytetrack.yaml",
-            conf=args.conf,
-            imgsz=args.imgsz,
-            classes=[0, 1, 2, 3, 5, 7],
-            device=device,
-            verbose=False,
-        )
-
-        r = results[0]
-
-        if r.boxes is not None and r.boxes.id is not None:
-            boxes = r.boxes.xyxy.cpu().numpy().astype(int)
-            class_ids = r.boxes.cls.cpu().numpy().astype(int)
-            confs = r.boxes.conf.cpu().numpy()
-            track_ids = r.boxes.id.cpu().numpy().astype(int)
-
-            for box, cls_id, conf, track_id in zip(boxes, class_ids, confs, track_ids):
-                x1, y1, x2, y2 = box
-
-                class_name = str(COCO_NAMES.get(int(cls_id), cls_id))
-                label = f"{t(locale, 'class_name', class_name)} ID:{int(track_id)} {conf:.2f}"
-
-                color = (0, 255, 255) if int(cls_id) == 0 else (255, 180, 0)
-
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(
-                    frame,
-                    label,
-                    (x1, max(20, y1 - 5)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.55,
-                    color,
-                    2,
-                )
-
-        cv2.putText(
-            frame,
-            t(locale, "pic_text", "Experimental real-time webcam mode"),
-            (20, 35),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.9,
-            (0, 255, 255),
-            2,
-        )
-
-        cv2.putText(
-            frame,
-            t(locale, "pic_text",
-              "ROI-based risk scoring requires camera-specific ROI calibration."),
-            (20, 70),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
-            (0, 255, 255),
-            2,
-        )
-
-        if writer is not None:
-            writer.write(frame)
-
-        cv2.imshow(t(locale, "pic_text", "Crosswalk Risk Warning - Webcam Demo"), frame)
-
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            break
-
-    cap.release()
-
-    if writer is not None:
-        writer.release()
-
-    cv2.destroyAllWindows()
+    if result["output_video"] is not None:
+        print("Output video:", result["output_video"])
 
 
 if __name__ == "__main__":

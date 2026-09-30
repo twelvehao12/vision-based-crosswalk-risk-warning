@@ -1,16 +1,11 @@
 from pathlib import Path
 import argparse
-import yaml
 
-from src.cv_pipeline import CrosswalkRiskPipeline
 from src.audio_warning import create_voice_warning_audio, merge_audio_to_video_h264
+from src.config import load_config
+from src.cv_pipeline import CrosswalkRiskPipeline
 from src.locales import DEFAULT_LOCALE, SUPPORTED_LOCALES
 from src.report_assets import create_risk_score_timeline, extract_representative_screenshots
-
-
-def load_config(config_path: str):
-    with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
 
 
 def main():

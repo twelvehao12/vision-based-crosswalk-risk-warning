@@ -173,6 +173,9 @@ The ROI file is located at:
 ```
 config/crosswalk_roi.json
 ```
+
+Each ROI file also records the frame size it was calibrated for (`frame_width` / `frame_height`) and, optionally, a `risk_scale` factor applied to the pixel-based risk thresholds. The pipeline refuses to run when a ROI is applied to a frame of a different size, because its coordinates and thresholds would no longer be meaningful. See section 17 for how a webcam calibration is produced from this file.
+
 Because this is an unsignalized crosswalk, vehicle presence alone is not treated as dangerous. The system increases risk only when pedestrians are inside or near the crosswalk and vehicles are close, approaching, or located in relevant approach zones.
 
 ---
@@ -428,25 +431,40 @@ This mode skips voice-warning generation and H.264 audio merging.
 
 ---
  
-## 17. Experimental Real-time Webcam Mode
+## 17. Real-time Webcam Mode
 
-This repository also includes an experimental webcam mode:
+This repository also includes a real-time webcam mode. It runs the same pipeline as `main.py` (detection, tracking, ROI-based risk scoring, visualization, event logging), so the two produce matching risk scores for the same scene.
+
+### 17.1 Calibrate the camera first
+
+`config/crosswalk_roi.json` is calibrated for the 1200x1100 demo video, and the pipeline rejects a ROI whose calibration size does not match the frame it receives. Point the camera at a screen playing that video, then build a calibration for the camera:
+
 ```
-python run_webcam.py --source 0
+python tools/make_webcam_roi.py --source 0 --interactive
 ```
+
+Drag a box around the video on the screen and press ENTER/SPACE, check that the ROI outlines land on the crosswalk, then press `s` to save `config/webcam_roi.json`. Without `--interactive` the screen area can be given directly, and `--frame-size WxH` skips opening the camera:
+
+```
+python tools/make_webcam_roi.py --frame-size 1280x720 --rect 100,50,640,480
+```
+
+Polygons are mapped by scale and offset into the camera frame, and the resulting `risk_scale` in the output file scales the pixel-based risk thresholds to match, so scoring stays equivalent to the original calibration. The source calibration is never modified.
+
+### 17.2 Run
+
+```
+python run_webcam.py --roi-config config/webcam_roi.json --source 0
+```
+
 To save webcam output:
 ```
-python run_webcam.py --source 0 --save
+python run_webcam.py --roi-config config/webcam_roi.json --source 0 --save
 ```
-This mode performs real-time YOLO11s detection and ByteTrack tracking from a local webcam.
 
-Important note:
-```
-The webcam mode is experimental.
-ROI-based risk scoring requires camera-specific ROI calibration.
-The current ROI configuration is designed for the provided CCTV-style demo video.
-```
-Therefore, webcam mode is included as an optional deployment experiment, not as the main evaluated pipeline.
+Press `q` in the preview window to quit. Any video file or RTSP stream can be used in place of the camera index, for example `--source data/demo/crosswalk_best_60s.mp4`, which will need `--roi-config config/crosswalk_roi.json` since that source matches the original calibration.
+
+Note that `config/webcam_roi.json` is camera-specific and is not tracked by git; regenerate it for each camera and mounting position.
 
 ---
 
@@ -454,17 +472,24 @@ Therefore, webcam mode is included as an optional deployment experiment, not as 
 
 ```text
 vision-based-crosswalk-risk-warning/
-├── README_project.md
+├── README.md
 ├── requirements.txt
 ├── main.py
 ├── run_webcam.py
 ├── config/
 │   ├── config.yaml
-│   └── crosswalk_roi.json
+│   ├── crosswalk_roi.json
+│   └── webcam_roi.json        (generated per camera, not tracked)
+├── tools/
+│   └── make_webcam_roi.py
 ├── src/
 │   ├── audio_warning.py
+│   ├── config.py
 │   ├── cv_pipeline.py
-│   └── report_assets.py
+│   ├── device.py
+│   ├── locales/
+│   ├── report_assets.py
+│   └── roi_transform.py
 ├── data/
 │   └── demo/
 │       └── crosswalk_best_60s.mp4 
@@ -494,7 +519,8 @@ vision-based-crosswalk-risk-warning/
 * The system may be affected by occlusion, lighting changes, and small distant pedestrians.
 * YOLO may produce false positives or miss objects in difficult conditions.
 * Voice warning is simulated and not connected to real speaker hardware, dashcam systems, navigation systems, or V2X devices.
-* Webcam mode requires camera-specific ROI calibration for full risk scoring.
+* Webcam mode requires camera-specific ROI calibration (`tools/make_webcam_roi.py`) for full risk scoring.
+* The webcam ROI is derived from the demo video's calibration by scale and offset, so it assumes the camera roughly faces the screen without strong perspective distortion. Re-calibrating by hand is more accurate for a permanent installation.
 
 ---
 

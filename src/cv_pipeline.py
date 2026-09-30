@@ -77,7 +77,8 @@ def orange_ratio_in_box(frame, box):
     return float(np.count_nonzero(mask)) / float(mask.size)
 
 
-def is_valid_person_detection(frame, box, conf, point, crosswalk_rois, waiting_zone):
+def is_valid_person_detection(frame, box, conf, point, crosswalk_rois, waiting_zone,
+                              scale=1.0):
     x1, y1, x2, y2 = box
 
     box_w = x2 - x1
@@ -97,10 +98,12 @@ def is_valid_person_detection(frame, box, conf, point, crosswalk_rois, waiting_z
     in_waiting = point_in_polygon(point, waiting_zone)
     orange_ratio = orange_ratio_in_box(frame, box)
 
+    # Minimum box sizes are pixel-based, so they follow the ROI pixel scale.
+    # Aspect ratio, confidence and orange ratio are scale-invariant.
     if in_crosswalk or in_waiting:
         if conf < 0.20:
             return False
-        if box_h < 20 or area < 180:
+        if box_h < 20 * scale or area < 180 * scale * scale:
             return False
         if orange_ratio > 0.40:
             return False
@@ -108,7 +111,7 @@ def is_valid_person_detection(frame, box, conf, point, crosswalk_rois, waiting_z
 
     if conf < 0.42:
         return False
-    if box_h < 35 or area < 500:
+    if box_h < 35 * scale or area < 500 * scale * scale:
         return False
     if aspect_ratio < 1.1 or aspect_ratio > 6.0:
         return False
@@ -118,7 +121,7 @@ def is_valid_person_detection(frame, box, conf, point, crosswalk_rois, waiting_z
     return True
 
 
-def is_valid_vehicle_detection(box, conf):
+def is_valid_vehicle_detection(box, conf, scale=1.0):
     x1, y1, x2, y2 = box
 
     box_w = x2 - x1
@@ -127,7 +130,7 @@ def is_valid_vehicle_detection(box, conf):
 
     if conf < 0.25:
         return False
-    if area < 800:
+    if area < 800 * scale * scale:
         return False
 
     return True
@@ -306,6 +309,10 @@ def draw_bird_eye_panel(frame, roi_config, persons, vehicles, dangerous_pair, H,
 
 
 class CrosswalkRiskPipeline:
+    # Populated by __init__. Defaulted at class level so load_roi() works on an
+    # instance built without __init__, which is enough to validate a ROI file.
+    _pixel_base: dict = {}
+
     def __init__(self, config, project_root: Path, language: str | None = None):
         self.config = config
         self.project_root = Path(project_root)
@@ -348,35 +355,194 @@ class CrosswalkRiskPipeline:
         print(f"Inference device: {self.device}")
         print(f"Locale: {self.locale['suffix']}")
 
-        self.high_distance_px = float(risk_cfg["high_distance_px"])
-        self.danger_distance_px = float(risk_cfg["danger_distance_px"])
-        self.critical_distance_px = float(risk_cfg["critical_distance_px"])
-        self.distance_decrease_margin = float(
-            risk_cfg["distance_decrease_margin"])
+        high_distance_px = float(risk_cfg["high_distance_px"])
+        danger_distance_px = float(risk_cfg["danger_distance_px"])
+        critical_distance_px = float(risk_cfg["critical_distance_px"])
+
         self.history_length = int(risk_cfg["history_length"])
         self.screenshot_cooldown_frames = int(
             risk_cfg["screenshot_cooldown_frames"])
         self.display_hold_frames = int(risk_cfg["display_hold_frames"])
 
         score_cfg = config.get("risk_score", {})
-        self.proximity_far_px = float(score_cfg.get("proximity_far_px", 180))
-        self.proximity_high_px = float(score_cfg.get(
-            "proximity_high_px", self.high_distance_px))
-        self.proximity_danger_px = float(score_cfg.get(
-            "proximity_danger_px", self.danger_distance_px))
-        self.proximity_critical_px = float(score_cfg.get(
-            "proximity_critical_px", self.critical_distance_px))
         self.ttc_medium_sec = float(score_cfg.get("ttc_medium_sec", 4.0))
         self.ttc_high_sec = float(score_cfg.get("ttc_high_sec", 2.5))
         self.ttc_danger_sec = float(score_cfg.get("ttc_danger_sec", 1.5))
-        self.slow_closing_px_per_frame = float(
-            score_cfg.get("slow_closing_px_per_frame", 5))
-        self.fast_closing_px_per_frame = float(
-            score_cfg.get("fast_closing_px_per_frame", 12))
+
+        # Thresholds expressed in image pixels, kept unscaled here so that
+        # load_roi() can re-derive them for the ROI's pixel scale.
+        self._pixel_base = {
+            "high_distance_px": high_distance_px,
+            "danger_distance_px": danger_distance_px,
+            "critical_distance_px": critical_distance_px,
+            "distance_decrease_margin": float(
+                risk_cfg["distance_decrease_margin"]),
+            "proximity_far_px": float(score_cfg.get("proximity_far_px", 180)),
+            "proximity_high_px": float(score_cfg.get(
+                "proximity_high_px", high_distance_px)),
+            "proximity_danger_px": float(score_cfg.get(
+                "proximity_danger_px", danger_distance_px)),
+            "proximity_critical_px": float(score_cfg.get(
+                "proximity_critical_px", critical_distance_px)),
+            "slow_closing_px_per_frame": float(
+                score_cfg.get("slow_closing_px_per_frame", 5)),
+            "fast_closing_px_per_frame": float(
+                score_cfg.get("fast_closing_px_per_frame", 12)),
+        }
+
+        self._apply_pixel_scale(1.0)
+
+    def _apply_pixel_scale(self, scale):
+        """Scale every pixel-based threshold by the ROI's pixel scale.
+
+        TTC thresholds stay in seconds on purpose: distance and closing speed
+        both scale with the image, so their ratio, and therefore the time to
+        collision, is invariant. Frame counts (history, cooldowns, display
+        hold) do not scale either.
+        """
+        self.pixel_scale = float(scale)
+
+        for name, base in self._pixel_base.items():
+            setattr(self, name, base * self.pixel_scale)
+
+    def _validate_polygon(self, name, points, required_points=None):
+        if not isinstance(points, list):
+            raise ValueError(f"ROI polygon '{name}' must be a list of points")
+
+        minimum = required_points if required_points is not None else 3
+        if len(points) < minimum:
+            raise ValueError(
+                f"ROI polygon '{name}' needs at least {minimum} points, "
+                f"got {len(points)}"
+            )
+
+        for index, point in enumerate(points):
+            if not isinstance(point, (list, tuple)) or len(point) != 2:
+                raise ValueError(
+                    f"ROI polygon '{name}' point {index} must be an [x, y] pair"
+                )
+
+            for value in point:
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise ValueError(
+                        f"ROI polygon '{name}' point {index} has a non-numeric "
+                        f"coordinate: {value!r}"
+                    )
+                if not math.isfinite(value):
+                    raise ValueError(
+                        f"ROI polygon '{name}' point {index} has a non-finite "
+                        f"coordinate: {value!r}"
+                    )
+
+    def _validate_roi_structure(self):
+        required_polygons = [
+            "crosswalk_roi",
+            "vehicle_approach_zone",
+            "pedestrian_waiting_zone",
+        ]
+
+        for name in required_polygons:
+            if name not in self.roi_config:
+                raise ValueError(f"ROI config is missing required key '{name}'")
+            self._validate_polygon(name, self.roi_config[name])
+
+        secondary = [
+            name for name in (
+                "secondary_crosswalk_roi", "secondary_vehicle_approach_zone")
+            if name in self.roi_config
+        ]
+        if len(secondary) == 1:
+            raise ValueError(
+                f"ROI config defines '{secondary[0]}' without its counterpart; "
+                "secondary crosswalk and secondary approach zone must be "
+                "provided together"
+            )
+        for name in secondary:
+            self._validate_polygon(name, self.roi_config[name])
+
+        for name in ("frame_width", "frame_height"):
+            value = self.roi_config.get(name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(
+                    f"ROI config needs a positive integer '{name}' describing "
+                    "the calibrated frame size"
+                )
+
+        risk_scale = self.roi_config.get("risk_scale", 1.0)
+        if isinstance(risk_scale, bool) or not isinstance(risk_scale, (int, float)):
+            raise ValueError("ROI config 'risk_scale' must be a number")
+        if not math.isfinite(risk_scale) or risk_scale <= 0:
+            raise ValueError(
+                f"ROI config 'risk_scale' must be a positive finite number, "
+                f"got {risk_scale!r}")
+
+        homography_cfg = self.roi_config.get("homography", {})
+        if homography_cfg.get("enabled", False):
+            if "src_points" not in homography_cfg:
+                raise ValueError(
+                    "ROI config enables homography but has no 'src_points'")
+            self._validate_polygon(
+                "homography.src_points", homography_cfg["src_points"],
+                required_points=4)
+
+            for name in ("bev_width", "bev_height"):
+                value = homography_cfg.get(name)
+                if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                    raise ValueError(
+                        f"ROI config needs a positive integer 'homography.{name}'")
+
+    def validate_roi_for_frame(self, frame_width, frame_height):
+        """Check that this ROI was calibrated for the frame it is applied to.
+
+        Coordinates are never rescaled implicitly: a ROI calibrated for one
+        camera or resolution is meaningless on another, so mismatches fail
+        loudly instead of drawing zone outlines in the wrong place.
+        """
+        calibrated_width = self.roi_config["frame_width"]
+        calibrated_height = self.roi_config["frame_height"]
+
+        if (calibrated_width, calibrated_height) != (frame_width, frame_height):
+            raise ValueError(
+                f"ROI calibration size mismatch for {self.roi_config_path}: "
+                f"calibrated for {calibrated_width}x{calibrated_height}, but the "
+                f"input frame is {frame_width}x{frame_height}. Calibrate a new "
+                "ROI for this camera and resolution; coordinates are not scaled "
+                "automatically."
+            )
+
+        polygon_keys = [
+            "crosswalk_roi",
+            "vehicle_approach_zone",
+            "pedestrian_waiting_zone",
+            "secondary_crosswalk_roi",
+            "secondary_vehicle_approach_zone",
+        ]
+
+        homography_cfg = self.roi_config.get("homography", {})
+        if homography_cfg.get("enabled", False):
+            polygon_keys.append("homography.src_points")
+
+        for key in polygon_keys:
+            if key == "homography.src_points":
+                points = homography_cfg["src_points"]
+            elif key in self.roi_config:
+                points = self.roi_config[key]
+            else:
+                continue
+
+            for index, (x, y) in enumerate(points):
+                if not (0 <= x < frame_width and 0 <= y < frame_height):
+                    raise ValueError(
+                        f"ROI point {index} of '{key}' at ({x}, {y}) is outside "
+                        f"the calibrated frame {frame_width}x{frame_height} "
+                        f"({self.roi_config_path})"
+                    )
 
     def load_roi(self):
         with open(self.roi_config_path, "r", encoding="utf-8") as f:
             self.roi_config = json.load(f)
+
+        self._validate_roi_structure()
 
         self.main_approach_zone = np.array(
             self.roi_config["vehicle_approach_zone"], dtype=np.int32)
@@ -407,6 +573,9 @@ class CrosswalkRiskPipeline:
             self.roi_config["pedestrian_waiting_zone"], dtype=np.int32)
         self.H_bev, self.bev_width, self.bev_height = setup_homography(
             self.roi_config)
+
+        self._apply_pixel_scale(
+            float(self.roi_config.get("risk_scale", 1.0)))
 
     def score_to_level(self, score):
         if score >= 75:
@@ -593,26 +762,95 @@ class CrosswalkRiskPipeline:
             best_closing_speed,
         )
 
-    def run(self):
+    def run(self, source=None, *, show_window=False, save_video=True):
+        """Run the pipeline over a video file, stream or camera index.
+
+        `source` defaults to the configured input video. `show_window` opens a
+        preview window and `save_video` writes an annotated output video; the
+        file pipeline keeps both off so it stays headless.
+        """
         self.load_roi()
 
-        cap = cv2.VideoCapture(str(self.input_video))
+        capture_source = self.input_video if source is None else source
+        opencv_source = (
+            str(capture_source)
+            if isinstance(capture_source, Path)
+            else capture_source
+        )
+
+        cap = cv2.VideoCapture(opencv_source)
         if not cap.isOpened():
-            raise RuntimeError(f"Cannot open video: {self.input_video}")
+            raise RuntimeError(
+                f"Cannot open webcam/video source: {capture_source}")
+
+        resources = {"writer": None}
+
+        try:
+            self._run_capture(
+                cap=cap,
+                capture_source=capture_source,
+                show_window=show_window,
+                save_video=save_video,
+                resources=resources,
+            )
+        finally:
+            cap.release()
+
+            writer = resources["writer"]
+            if writer is not None:
+                writer.release()
+
+            if show_window:
+                cv2.destroyAllWindows()
+
+        return {
+            "output_video": str(self.output_video) if save_video else None,
+            "event_log": str(self.event_log),
+            "screenshot_dir": str(self.screenshot_dir),
+        }
+
+    def _run_capture(self, cap, capture_source, show_window, save_video, resources):
+        first_frame_ok, first_frame = cap.read()
+
+        if not first_frame_ok or first_frame is None:
+            raise RuntimeError(
+                f"Cannot read the first frame from: {capture_source}")
+
+        height, width = first_frame.shape[:2]
+
+        # Validate before opening a writer or loading the model. A ROI
+        # calibrated for another camera or resolution must fail loudly rather
+        # than draw its zones in the wrong place.
+        self.validate_roi_for_frame(width, height)
 
         fps = cap.get(cv2.CAP_PROP_FPS)
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if not math.isfinite(fps) or fps <= 0:
+            fps = 30.0
 
-        print("Input video:", self.input_video)
+        raw_frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        if math.isfinite(raw_frame_count) and raw_frame_count > 0:
+            frame_count = int(raw_frame_count)
+        else:
+            frame_count = 0
+
+        print("Input source:", capture_source)
         print("FPS:", fps)
         print("Resolution:", width, "x", height)
-        print("Frames:", frame_count)
+        if frame_count > 0:
+            print("Frames:", frame_count)
 
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(
-            str(self.output_video), fourcc, fps, (width, height))
+        writer = None
+
+        if save_video:
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            writer = cv2.VideoWriter(
+                str(self.output_video), fourcc, fps, (width, height))
+
+            if not writer.isOpened():
+                raise RuntimeError(
+                    f"Cannot open output video writer: {self.output_video}")
+
+            resources["writer"] = writer
 
         model = YOLO(self.model_name)
 
@@ -659,12 +897,9 @@ class CrosswalkRiskPipeline:
             ])
 
         frame_id = 0
+        frame = first_frame
 
         while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-
             time_sec = frame_id / fps
 
             results = model.track(
@@ -713,11 +948,13 @@ class CrosswalkRiskPipeline:
                             point=pt,
                             crosswalk_rois=self.crosswalk_rois,
                             waiting_zone=self.pedestrian_waiting_zone,
+                            scale=self.pixel_scale,
                         ):
                             persons.append(obj)
 
                     elif cls_id in VEHICLE_CLASS_IDS:
-                        if is_valid_vehicle_detection(box, conf):
+                        if is_valid_vehicle_detection(
+                                box, conf, scale=self.pixel_scale):
                             vehicles.append(obj)
 
             persons_in_crosswalk = []
@@ -927,23 +1164,32 @@ class CrosswalkRiskPipeline:
                         screenshot_path,
                     ])
 
-            writer.write(frame)
+            if writer is not None:
+                writer.write(frame)
+
+            if show_window:
+                window_title = t(
+                    self.locale, "pic_text",
+                    "Crosswalk Risk Warning - Webcam Demo")
+                cv2.imshow(window_title, frame)
+
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
 
             frame_id += 1
 
             if frame_id % 100 == 0:
-                print(f"Processed {frame_id}/{frame_count} frames")
+                if frame_count > 0:
+                    print(f"Processed {frame_id}/{frame_count} frames")
+                else:
+                    print(f"Processed {frame_id} frames")
 
-        cap.release()
-        writer.release()
+            ret, frame = cap.read()
+            if not ret:
+                break
 
         print("Done.")
-        print("Output video:", self.output_video)
+        if save_video:
+            print("Output video:", self.output_video)
         print("Event log:", self.event_log)
         print("Screenshots:", self.screenshot_dir)
-
-        return {
-            "output_video": self.output_video,
-            "event_log": self.event_log,
-            "screenshot_dir": self.screenshot_dir,
-        }

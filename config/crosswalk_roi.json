@@ -1,5 +1,7 @@
 {
   "video_id": "crosswalk_best_60s",
+  "frame_width": 1200,
+  "frame_height": 1100,
   "crosswalk_roi": [
     [
       35,
